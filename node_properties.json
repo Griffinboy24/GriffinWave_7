@@ -1,0 +1,10 @@
+{
+  "Griffin_WT": [
+    "IsPolyphonic",
+    "AllowPolyphonic"
+  ],
+  "Griffin_WaveMaker": [
+    "IsPolyphonic",
+    "AllowPolyphonic"
+  ]
+}
