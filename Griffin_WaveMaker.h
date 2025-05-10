@@ -7,18 +7,7 @@
 
 #include "src/griffinwave5/AsyncMipBuilder.h"
 
-
-
-
 // Use this enum to refer to the cables, eg. this->setGlobalCableValue<GlobalCables::cbl_e1_w1>(0.4)
-
-// Subclass your node from this
-
-
-
-
-
-
 
 namespace project
 {
@@ -26,22 +15,16 @@ namespace project
     using namespace hise;
     using namespace scriptnode;
 
-
-
-
     // Global Cable Interface
     enum class GlobalCables
     {
-        cbl_e1_w1 = 0,
-        cbl_e1_w2 = 1,
-        cbl_e1_w3 = 2
+        cbl_e1_w1 = 0,  // external slot 0 – decimated preview
+        cbl_e1_w2 = 1,  // external slot 1 – decimated preview
+        cbl_e1_w3 = 2   // blended preview (GUI waveform)
     };
     using cable_manager_t = routing::global_cable_cpp_manager<SN_GLOBAL_CABLE(328105083),
         SN_GLOBAL_CABLE(328105084),
         SN_GLOBAL_CABLE(328105085)>;
-
-
-
 
     template <int NV>
     struct Griffin_WaveMaker : public data::base, public cable_manager_t
@@ -65,12 +48,12 @@ namespace project
         /* ===== wavetable constants ======================================= */
         static constexpr int FrameSize = 2048;
         static constexpr int MaxFrames = 256;
-        static constexpr int MaxSamples = FrameSize * MaxFrames;          // 524 288
+        static constexpr int MaxSamples = FrameSize * MaxFrames;   // 524288
         static constexpr int DecFactor = 4;
-        static constexpr int DecSamples = MaxSamples / DecFactor;         // 131 072
+        static constexpr int DecSamples = MaxSamples / DecFactor;  // 131072
         static constexpr int TripFactor = 3;
-        static constexpr int TripledSamples = MaxSamples * TripFactor;        // 1 572 864
-        static constexpr int TripledFrame = FrameSize * TripFactor;         // 6 144
+        static constexpr int TripledSamples = MaxSamples * TripFactor; // 1572864
+        static constexpr int TripledFrame = FrameSize * TripFactor; // 6144
 
         /* ===== storage ==================================================== */
         block              audioBlocks[NumAudioFiles];
@@ -88,7 +71,7 @@ namespace project
         struct Worker : Thread
         {
             Griffin_WaveMaker& owner;
-            Worker(Griffin_WaveMaker& p) : Thread("WTBuilder"), owner(p) {}
+            explicit Worker(Griffin_WaveMaker& p) : Thread("WTBuilder"), owner(p) {}
 
             void run() override
             {
@@ -99,10 +82,9 @@ namespace project
                     owner.wakeEvt.wait(-1);
                     if (threadShouldExit()) return;
 
-                    /* make sure at least one file is loaded */
                     const bool has0 = (owner.numSamples[0] == N);
                     const bool has1 = (owner.numSamples[1] == N);
-                    if (!has0 && !has1) continue;
+                    if (!has0 && !has1) continue;          // nothing loaded yet
 
                     /* --- 1. blend ------------------------------------------------ */
                     const double m = owner.mix.load(std::memory_order_acquire);
@@ -125,7 +107,7 @@ namespace project
                         FloatVectorOperations::addWithMultiply(
                             owner.mixBuf.data(), owner.audioBlocks[1].data, (float)g1, N);
 
-                    /* --- 2. down-sample for the GUI cable ----------------------- */
+                    /* --- 2. down-sample for the GUI cable ---------------------- */
                     for (int i = 0; i < DecSamples; ++i)
                         owner.decBuf[i] = owner.mixBuf[i * DecFactor];
 
@@ -133,10 +115,10 @@ namespace project
                     decArr.ensureStorageAllocated(DecSamples);
                     for (float v : owner.decBuf) decArr.add(v);
 
-                    // Send graphics to cbl_e1_w3
+                    // blended preview -> cbl_e1_w3
                     owner.sendDataToGlobalCable<GlobalCables::cbl_e1_w3>(decArr);
 
-                    /* --- 3. write tripled block straight into builder slot ------ */
+                    /* --- 3. write tripled block straight into builder slot ----- */
                     owner.tripleView = gw5::AsyncMipBuilder::instance().writeSlot();
 
                     float* dst = owner.tripleView;
@@ -145,7 +127,7 @@ namespace project
                     {
                         memcpy(dst, src, FrameSize * sizeof(float));
                         memcpy(dst + FrameSize, src, FrameSize * sizeof(float));
-                        memcpy(dst + 2 * FrameSize, src, FrameSize * sizeof(float));
+                        memcpy(dst + FrameSize * 2, src, FrameSize * sizeof(float));
                         dst += TripledFrame;
                         src += FrameSize;
                     }
@@ -157,7 +139,7 @@ namespace project
         } worker{ *this };
 
         /* ===== lifecycle ================================================== */
-        void prepare(PrepareSpecs) 
+        void prepare(PrepareSpecs)
         {
             mixBuf.resize(MaxSamples);
             decBuf.resize(DecSamples);
@@ -166,29 +148,46 @@ namespace project
             worker.startThread();
         }
 
-        void reset()  { wakeEvt.signal(); }
+        void reset() { wakeEvt.signal(); }
 
         SN_EMPTY_PROCESS_FRAME;
         SN_EMPTY_HANDLE_EVENT;
         SN_EMPTY_PROCESS;
 
         /* ===== external data ============================================= */
-        void setExternalData(const snex::ExternalData& d, int idx) 
+        void setExternalData(const snex::ExternalData& d, int idx)
         {
             if (d.dataType != snex::ExternalData::DataType::AudioFile || idx >= NumAudioFiles)
                 return;
 
-            if (d.numChannels != 1 || d.numSamples != MaxSamples)
+            const bool valid = (d.numChannels == 1 && d.numSamples == MaxSamples);
+
+            if (!valid)
             {
-                Logger::writeToLog("WaveMaker: wavetable must be mono "
-                    + String(MaxSamples) + " samples");
+                Logger::writeToLog("WaveMaker: wavetable must be mono " + String(MaxSamples) + " samples");
                 numSamples[idx] = 0;
             }
             else
             {
                 d.referBlockTo(audioBlocks[idx], 0);
                 numSamples[idx] = d.numSamples;
+
+                /* --- decimate once and publish to dedicated cable ---------- */
+                std::vector<float> tmpDec(DecSamples);
+                const float* src = audioBlocks[idx].data;
+                for (int i = 0; i < DecSamples; ++i) tmpDec[i] = src[i * DecFactor];
+
+                Array<var> decArr;
+                decArr.ensureStorageAllocated(DecSamples);
+                for (float v : tmpDec) decArr.add(v);
+
+                if (idx == 0)
+                    sendDataToGlobalCable<GlobalCables::cbl_e1_w1>(decArr);
+                else
+                    sendDataToGlobalCable<GlobalCables::cbl_e1_w2>(decArr);
             }
+
+            /* wake builder – it will only process if something is loaded */
             wakeEvt.signal();
         }
 
