@@ -7,21 +7,41 @@
 
 #include "src/griffinwave5/AsyncMipBuilder.h"
 
+
+
+
+// Use this enum to refer to the cables, eg. this->setGlobalCableValue<GlobalCables::cbl_e1_w1>(0.4)
+
+// Subclass your node from this
+
+
+
+
+
+
+
 namespace project
 {
     using namespace juce;
     using namespace hise;
     using namespace scriptnode;
 
+
+
+
+    // Global Cable Interface
     enum class GlobalCables
     {
-        cbl_WT1 = 0,
-        cbl_wtd1 = 1
+        cbl_e1_w1 = 0,
+        cbl_e1_w2 = 1,
+        cbl_e1_w3 = 2
     };
+    using cable_manager_t = routing::global_cable_cpp_manager<SN_GLOBAL_CABLE(328105083),
+        SN_GLOBAL_CABLE(328105084),
+        SN_GLOBAL_CABLE(328105085)>;
 
-    using cable_manager_t = routing::global_cable_cpp_manager<
-        SN_GLOBAL_CABLE(576864674),
-        SN_GLOBAL_CABLE(703921404)>;
+
+
 
     template <int NV>
     struct Griffin_WaveMaker : public data::base, public cable_manager_t
@@ -112,7 +132,9 @@ namespace project
                     Array<var> decArr;
                     decArr.ensureStorageAllocated(DecSamples);
                     for (float v : owner.decBuf) decArr.add(v);
-                    owner.sendDataToGlobalCable<GlobalCables::cbl_wtd1>(decArr);
+
+                    // Send graphics to cbl_e1_w3
+                    owner.sendDataToGlobalCable<GlobalCables::cbl_e1_w3>(decArr);
 
                     /* --- 3. write tripled block straight into builder slot ------ */
                     owner.tripleView = gw5::AsyncMipBuilder::instance().writeSlot();
@@ -193,7 +215,7 @@ namespace project
             ps.add(std::move(p));
         }
 
-        // DONT REMOVE THE LINES BELOW – build system markers
+        // DONT REMOVE THE LINES BELOW â€“ build system markers
         // 'NumFilters' 'NumTables' 'NumTables' 'NumSliderPacks'
         // 'NumSliderPacks' 'NumFilters' 'NumDisplayBuffers' 'NumDisplayBuffers'
     };
